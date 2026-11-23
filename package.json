@@ -21,7 +21,7 @@
     "@astrojs/sitemap": "^3.0.0",
     "@astrojs/rss": "^4.0.0",
     "@astrojs/preact": "^4.0.0",
-    "preact": "^10.0.0",
+    "preact": "^11.2.0",
     "octokit": "^4.0.0",
     "tailwindcss": "^4.0.0",
     "@tailwindcss/vite": "^4.0.0"
