@@ -1,6 +1,6 @@
-# 默认维护者：把 @OWNER 改成你的 GitHub 用户名
-*                       @OWNER
-/content/software/      @OWNER
-/data/                  @OWNER
-/.github/workflows/     @OWNER
-/src/                   @OWNER
+# 默认维护者
+*                       @yangwkhub
+/content/software/      @yangwkhub
+/data/                  @yangwkhub
+/.github/workflows/     @yangwkhub
+/src/                   @yangwkhub
