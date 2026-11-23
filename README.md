@@ -164,14 +164,14 @@ npm run serve              # 全站 HTTPS 预览：https://127.0.0.1:4321/
 1. 打开 `/admin/`。默认是**演示模式**，可直接体验全部页面（数据仅存本机）。
 2. 点右上角 **连接 GitHub** → 到 GitHub → Settings → Developer settings → **Fine-grained personal access tokens** → Generate new token：
    - Repository access：**Only select repositories** → 选本项目；
-   - Permissions：`Contents: Read & Write`、`Issues: Read & Write`、`Pull requests: Read & Write`、`Metadata: Read-only`（评论管理另加 `Discussions: Read & Write`）；
+   - Permissions：`Contents: Read & Write`、`Issues: Read & Write`、`Pull requests: Read & Write`、`Discussions: Read & Write`（后台评论管理必需）、`Metadata: Read-only`；
    - 有效期建议 ≤ 90 天。
 3. 把令牌粘进后台登录框。后台会调用 `GET /user` 与 `GET /repos/{owner}/{repo}` 做权限自检，无 `push` 权限直接拒绝。
 4. 令牌仅保存在 **sessionStorage**（关闭标签页即失效），不会写入仓库、`.env`、CI、日志或 URL。
 5. 登录后：
    - **投稿审核**聚合 Issues 与 PRs，按优先级 / SLA 排序，可关闭 Issue、合并 PR；
    - **软件条目**可新增 / 编辑，保存后创建 `admin/<action>-<slug>-<ts>` 临时分支 → commit → PR，等待 `Content CI` 校验；
-   - **评论管理**在生产态跳转到 Discussions（Giscus 承担审核），演示态可直接通过 / 隐藏 / 删除；
+   - **评论管理**在生产态通过 GitHub GraphQL 直连 Discussions，读取真实 Giscus 评论，可直接隐藏 / 取消隐藏 / 删除并跳转原评论（需 PAT 的 `Discussions: Read & Write`）；演示态操作本机演示数据；
    - **审计日志**直接读取仓库 commit 历史，无法被后台绕过。
 
 > 安全边界：后台**没有**任何服务端密钥，也不存 PAT；任何人都可以在浏览器里打开 `/admin/`，但没有有效 PAT 就只能看演示数据，无法改动仓库。

@@ -39,7 +39,7 @@
 | 内容校验 | 每个 PR 触发 `content-ci.yml`，推送 `main` 触发 `deploy.yml` |
 | 协议 | 全站强制 HTTPS，构建期守卫 + Pages 端 Enforce HTTPS 双重保证 |
 | 搜索 | Pagefind 客户端索引（随产物上传，依赖 `.nojekyll` + 隐藏文件上传） |
-| 评论 | 生产用 Giscus（GitHub Discussions）；未配置 ID 时自动降级为本地演示模式 |
+| 评论 | 生产用 Giscus（GitHub Discussions），后台可直接管理真实评论；未配置 ID 时自动降级为本地演示模式 |
 
 > **重要**：本站点是纯静态产物，TLS 由 GitHub 在边缘节点终止。产物本身无法发送 HSTS 响应头，因此必须在仓库设置中开启 **Enforce HTTPS**（见第 4 节）。
 
@@ -324,10 +324,10 @@ CI 中 `deploy.yml`、`content-ci.yml` 另有 shell 步骤再次确认 `PUBLIC_S
   - `Issues: Read & Write`（投稿审核）
   - `Pull requests: Read & Write`（创建合并 PR）
   - `Metadata: Read-only`（自动包含）
-  - `Discussions: Read & Write`（仅在需后台管理评论时添加）
+  - `Discussions: Read & Write`（后台「评论管理」页读取并管理 Giscus 真实评论所必需；未授予时该页会提示权限不足）
 - **有效期**：建议 ≤ 90 天。
 
-后台会调用 `GET /user` 与 `GET /repos/{owner}/{repo}` 自检，无 `push` 权限直接拒绝。令牌仅存浏览器 `sessionStorage`，关闭标签页即失效，不会写入仓库、`.env`、CI、日志或 URL。
+后台会调用 `GET /user` 与 `GET /repos/{owner}/{repo}` 自检，无 `push` 权限直接拒绝。评论管理页另走 GitHub **GraphQL**（`repository.discussions` / `minimizeComment` / `deleteDiscussionComment`，端点同为 `https://api.github.com/graphql`，已被后台 CSP 放行），需要 PAT 具备 `Discussions: Read & Write`；未授予时仅评论管理页报错，内容/投稿流程不受影响。令牌仅存浏览器 `sessionStorage`，关闭标签页即失效，不会写入仓库、`.env`、CI、日志或 URL。
 
 ---
 
@@ -368,6 +368,7 @@ CI 中 `deploy.yml`、`content-ci.yml` 另有 shell 步骤再次确认 `PUBLIC_S
 | 构建报"明文 HTTP"错误 | 某处写了 `http://` URL | 改为 `https://`；命名空间类 URI 已被守卫白名单放行 |
 | 评论区一直是演示模式 | Giscus 的 `REPO_ID` / `CATEGORY_ID` 为空或格式不对 | ID 应分别以 `R_` / `DIC_` 开头，且仓库已启用 Discussions |
 | 后台登录提示无权限 | PAT 非 fine-grained，或未授权到该仓库，或无 push 权限 | 按 9.2 重新签发最小权限 PAT |
+| 后台评论管理页报"读取评论失败" | PAT 未授予 `Discussions: Read & Write`，或 GraphQL 被 CSP 拦截 | 给 PAT 加 `Discussions: Read & Write`（见 9.2）；后台 CSP 的 `connect-src` 须含 `https://api.github.com` |
 | 后台按钮点击无反应 | CSP 拦截 / PAT 过期 | 后台脚本全部走外部 bundle；重新登录并确认令牌有效 |
 | 部署 workflow 报 403 | Pages Source 非 GitHub Actions，或 workflow 权限不足 | Settings → Pages 选 GitHub Actions；Actions 权限设为读写 |
 | 换域名后评论"消失" | 使用了 `url` 映射 | 固定 `pathname` 映射，不要改 |

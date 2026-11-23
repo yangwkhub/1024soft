@@ -7,6 +7,7 @@ import { Octokit } from 'octokit';
 
 const OWNER = import.meta.env.PUBLIC_REPO_OWNER || 'OWNER';
 const REPO = import.meta.env.PUBLIC_REPO_NAME || 'REPO';
+const GISCUS_CATEGORY_ID = import.meta.env.PUBLIC_GISCUS_CATEGORY_ID || '';
 const TOKEN_KEY = '1024soft_gh_pat';
 
 let token: string | null = null;
@@ -168,4 +169,87 @@ export async function closeIssue(number: number, state: 'closed' | 'open' = 'clo
 }
 export async function setIssueLabels(number: number, labels: string[]) {
   return api().rest.issues.setLabels({ owner: OWNER, repo: REPO, issue_number: number, labels });
+}
+
+/* ---------------- Giscus 评论（GitHub Discussions / GraphQL） ----------------
+ * 生产评论区由 Giscus 托管，真实评论存放在仓库 Discussions 中。
+ * 这里通过 GraphQL 直接读取与管理，PAT 需要 Discussions: read & write 权限。
+ * 端点 https://api.github.com/graphql 已被后台 CSP 的 connect-src 放行。
+ */
+export interface DiscussionCommentItem {
+  id: string;              // GraphQL node id，作为隐藏/删除操作的句柄
+  discussionId: string;
+  discussionTitle: string; // Giscus 通常以页面 pathname 作为讨论标题
+  discussionUrl: string;
+  discussionNumber: number;
+  author: string;
+  avatar: string;
+  body: string;
+  createdAt: string;
+  isMinimized: boolean;    // 被隐藏（minimize）的评论在 Giscus 中显示为折叠
+  minimizedReason: string;
+  reactions: number;
+  url: string;             // 评论直达链接
+}
+
+const DISCUSSION_COMMENTS_QUERY = `
+  query($owner:String!,$repo:String!,$categoryId:ID){
+    repository(owner:$owner,name:$repo){
+      discussions(first:100, categoryId:$categoryId, orderBy:{field:UPDATED_AT,direction:DESC}){
+        nodes{
+          id number title url
+          comments(first:100){
+            nodes{
+              id url bodyText createdAt
+              author{login avatarUrl}
+              isMinimized minimizedReason
+              reactions{ totalCount }
+            }
+          }
+        }
+      }
+    }
+  }`;
+
+/** 读取 Giscus 分类下的全部评论，按时间倒序扁平化返回 */
+export async function listDiscussionComments(): Promise<DiscussionCommentItem[]> {
+  const data: any = await api().graphql(DISCUSSION_COMMENTS_QUERY, {
+    owner: OWNER, repo: REPO, categoryId: GISCUS_CATEGORY_ID || null
+  });
+  const discussions = data?.repository?.discussions?.nodes || [];
+  const out: DiscussionCommentItem[] = [];
+  for (const d of discussions) {
+    for (const c of (d.comments?.nodes || [])) {
+      out.push({
+        id: c.id,
+        discussionId: d.id,
+        discussionTitle: d.title || '',
+        discussionUrl: d.url || '',
+        discussionNumber: d.number || 0,
+        author: c.author?.login || 'ghost',
+        avatar: c.author?.avatarUrl || '',
+        body: c.bodyText || '',
+        createdAt: c.createdAt || '',
+        isMinimized: !!c.isMinimized,
+        minimizedReason: c.minimizedReason || '',
+        reactions: c.reactions?.totalCount || 0,
+        url: c.url || d.url || ''
+      });
+    }
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export type CommentModeration = 'hide' | 'unhide' | 'delete';
+
+/** 隐藏 / 取消隐藏 / 删除一条 Giscus 评论（GraphQL mutation） */
+export async function moderateDiscussionComment(id: string, action: CommentModeration): Promise<void> {
+  const gh = api();
+  if (action === 'delete') {
+    await gh.graphql(`mutation($id:ID!){deleteDiscussionComment(input:{id:$id}){deletedCommentId}}`, { id });
+  } else if (action === 'hide') {
+    await gh.graphql(`mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}`, { id });
+  } else {
+    await gh.graphql(`mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}`, { id });
+  }
 }

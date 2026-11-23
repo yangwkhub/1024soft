@@ -24,6 +24,11 @@ let commits: any[] = [];
 let audit: any[] = [];
 let contentQuery = '';
 let busy = false;
+/* Giscus 评论（live 模式直读 GitHub Discussions / GraphQL） */
+let discussionComments: gh.DiscussionCommentItem[] = [];
+let commentsLoaded = false;
+let commentsLoading = false;
+let commentsError = '';
 /* 四个列表页共用一套分页：每页 20 条，页码状态按页面独立保存 */
 const PAGE_SIZE = 20;
 const pageState: Record<string, number> = { queue: 1, content: 1, comments: 1, audit: 1 };
@@ -82,6 +87,22 @@ async function loadCommits() {
   if (mode === 'live') {
     try { commits = await gh.listCommits(12); } catch { commits = []; }
   } else commits = [];
+}
+
+/** 按需加载真实 Giscus 评论；仅 live 模式且已配置 Giscus 时调用，带缓存避免重复请求 */
+async function ensureDiscussionComments(force = false) {
+  if (mode !== 'live' || !GISCUS_ON) return;
+  if (commentsLoaded && !force) return;
+  if (commentsLoading) return;
+  commentsLoading = true; commentsError = '';
+  try {
+    discussionComments = await gh.listDiscussionComments();
+    commentsLoaded = true;
+  } catch (err: any) {
+    commentsError = err?.message || '读取失败';
+    discussionComments = [];
+    commentsLoaded = false;
+  } finally { commentsLoading = false; }
 }
 
 /* ---------------- 布局 ---------------- */
@@ -264,7 +285,7 @@ function pageLogin() {
     <div class="login-head"><span class="brand-mark login-mark">1024</span><span class="login-word">Soft</span></div>
     <h1>连接 GitHub 仓库</h1>
     <p class="lead">后台不部署任何服务器。维护者用自己的 fine-grained PAT 在浏览器直连 GitHub REST API，令牌只保存在 <code>sessionStorage</code>，关闭标签页即失效；所有修改都会生成 PR 并触发 Content CI。</p>
-    <div class="a-banner amber">最小权限：目标仓库的 <strong>Contents: read & write</strong>、<strong>Issues: read & write</strong>、<strong>Pull requests: read & write</strong>、<strong>Metadata: read</strong>。不要使用 classic PAT 或带 <code>repo</code> 全范围的令牌。</div>
+    <div class="a-banner amber">最小权限：目标仓库的 <strong>Contents: read & write</strong>、<strong>Issues: read & write</strong>、<strong>Pull requests: read & write</strong>、<strong>Discussions: read & write</strong>（用于评论管理）、<strong>Metadata: read</strong>。不要使用 classic PAT 或带 <code>repo</code> 全范围的令牌。</div>
     <form data-form="pat">
       <div class="a-field"><label for="pat">GitHub Personal Access Token</label>
         <input class="a-input" id="pat" type="password" placeholder="github_pat_…" autocomplete="off" required />
@@ -284,6 +305,7 @@ function pageDashboard() {
   const openQueue = queue.filter((q) => q.state === 'open');
   const urgent = openQueue.filter((q) => q.priority === 'urgent').length;
   const pendingComments = allLocalComments().filter((c) => c.status === 'pending').length;
+  const liveCommentCount = mode === 'live' && GISCUS_ON && commentsLoaded ? discussionComments.length : null;
   const fresh = catalog.filter((s) => s.last_checked_at && (Date.now() - new Date(`${s.last_checked_at}T00:00:00Z`).getTime()) / 86400000 < 180).length;
   const ratio = catalog.length ? Math.round((fresh / catalog.length) * 100) : 0;
 
@@ -292,7 +314,7 @@ function pageDashboard() {
     <div class="a-cards">
       ${card('收录软件', catalog.length, '', 'box')}
       ${card('待审投稿', openQueue.length, urgent ? `其中 ${urgent} 条紧急` : '', 'alert')}
-      ${card('待审评论', mode === 'live' ? '—' : pendingComments, mode === 'live' ? '生产环境由 Discussions 管理' : '', 'comments')}
+      ${card('评论管理', liveCommentCount ?? (mode === 'live' ? '—' : pendingComments), mode === 'live' ? (GISCUS_ON ? 'GitHub Discussions · 可隐藏 / 删除' : '未接入 Giscus') : '本机演示数据', 'comments')}
       ${card('数据新鲜度', `${ratio}%`, '', 'chart')}
     </div>
     <div class="a-charts">
@@ -421,7 +443,52 @@ function pageEditor(slug: string) {
     </form>`;
 }
 
+/** 评论分派：live 模式直管 Giscus / GitHub Discussions 真实评论；demo 模式用本地演示数据 */
 function pageComments() {
+  if (mode === 'live' && GISCUS_ON) return pageDiscussionComments();
+  return pageDemoComments();
+}
+
+/** Live：读取并管理 GitHub Discussions 中的真实 Giscus 评论 */
+function pageDiscussionComments() {
+  const all = discussionComments;
+  const hidden = all.filter((c) => c.isMinimized).length;
+  const info = pageOf('comments', all);
+  const errorBox = commentsError
+    ? `<div class="a-banner amber">读取评论失败：${e(commentsError)}。请确认 PAT 已开启本仓库的 <strong>Discussions: read &amp; write</strong> 权限。<button class="a-btn sm" data-act="comment-refresh" style="margin-left:8px">重新加载</button></div>`
+    : '';
+  return `
+    <div class="a-banner blue">评论区已接入 <strong>Giscus / GitHub Discussions</strong>，此处直接管理线上真实评论。「隐藏」会折叠评论，「删除」不可恢复；两项操作立即生效，需 PAT 具备 <strong>Discussions: read &amp; write</strong> 权限。</div>
+    ${commentsLoading ? '<div class="a-banner amber">正在读取 GitHub Discussions…</div>' : ''}
+    ${errorBox}
+    <div class="a-cards">
+      ${card('评论总数', all.length, 'Discussions 实时数据', 'users')}
+      ${card('已隐藏', hidden, '在 Giscus 中折叠', 'eyeOff')}
+      ${card('正常显示', all.length - hidden, '前台可见', 'check')}
+      ${card('讨论数', new Set(all.map((c) => c.discussionId)).size, '对应站点页面', 'comments')}
+    </div>
+    <div class="a-panel"><h3>Giscus 评论管理 <button class="a-btn sm" data-act="comment-refresh" style="margin-left:8px">刷新</button></h3>
+      <table class="a-table"><thead><tr><th>作者</th><th>所属页面</th><th>内容</th><th>状态</th><th>时间</th><th>操作</th></tr></thead><tbody>
+      ${info.rows.map((c) => `<tr>
+        <td><strong>@${e(c.author)}</strong>${c.avatar ? `<img src="${e(c.avatar)}" alt="" width="18" height="18" style="border-radius:50%;vertical-align:middle;margin-left:4px" />` : ''}<div class="sub">👍 ${c.reactions}</div></td>
+        <td><a href="${e(c.discussionUrl)}" target="_blank" rel="noopener"><code style="font-size:11.5px">${e(c.discussionTitle)}</code></a></td>
+        <td style="max-width:420px">${e(c.body.slice(0, 120))}${c.body.length > 120 ? '…' : ''}</td>
+        <td><span class="a-badge ${c.isMinimized ? 'gray' : 'green'}">${c.isMinimized ? '已隐藏' : '正常'}</span></td>
+        <td>${ago(c.createdAt)}</td>
+        <td><div class="a-row">
+          ${c.isMinimized
+            ? `<button class="a-btn sm" data-act="comment-unhide" data-id="${e(c.id)}">取消隐藏</button>`
+            : `<button class="a-btn sm" data-act="comment-hide" data-id="${e(c.id)}">隐藏</button>`}
+          <button class="a-btn sm danger" data-act="comment-delete" data-id="${e(c.id)}">删除</button>
+          <a class="a-btn sm" href="${e(c.url)}" target="_blank" rel="noopener">查看 ↗</a>
+        </div></td></tr>`).join('') || `<tr><td colspan="6" class="a-empty">${commentsError ? '未能读取评论' : '暂无评论（访客首次打开某页面评论区时会自动创建讨论）'}</td></tr>`}
+      </tbody></table>
+      ${pager('comments', info)}
+    </div>`;
+}
+
+/** Demo：本地演示评论仓库，仅存浏览器 localStorage */
+function pageDemoComments() {
   const all = allLocalComments().filter((c) => c.status !== 'deleted');
   const pending = all.filter((c) => c.status === 'pending');
   const info = pageOf('comments', all);
@@ -477,7 +544,7 @@ function pageSettings() {
           <dt>目标仓库</dt><dd>${e(OWNER)}/${e(REPO)} ${gh.isPlaceholderRepo ? '<span class="a-badge amber">未配置（占位符）</span>' : ''}</dd>
           <dt>站点基路径</dt><dd><code>${e(BASE)}</code></dd>
           <dt>数据源</dt><dd>git（content/software/*.md）+ 构建期 JSON 快照</dd>
-          <dt>评论区</dt><dd><span class="a-badge ${GISCUS_ON ? 'green' : 'amber'}">${GISCUS_ON ? 'Giscus / Discussions' : '本地演示仓库'}</span></dd>
+          <dt>评论区</dt><dd><span class="a-badge ${GISCUS_ON ? 'green' : 'amber'}">${GISCUS_ON ? 'Giscus / Discussions（后台可直接管理）' : '本地演示仓库'}</span></dd>
           <dt>令牌存储</dt><dd>sessionStorage（关闭标签页即失效）</dd>
           <dt>写操作</dt><dd>临时分支 → commit → PR → Content CI → 合并发布</dd>
         </dl>
@@ -583,6 +650,8 @@ async function render() {
   const { page, arg } = currentRoute();
   const root = $('#admin-root'); if (!root) return;
   if (page === 'login') { root.innerHTML = pageLogin(); return; }
+  // 评论页在 live 模式下按需拉取真实 Discussions 评论（首次进入时加载，之后走缓存）
+  if (page === 'comments') await ensureDiscussionComments();
   const bodyHtml = page === 'dashboard' ? pageDashboard()
     : page === 'queue' ? pageQueue()
     : page === 'content' ? pageContent()
@@ -608,6 +677,10 @@ async function boot() {
     } catch { gh.signOut(); }
   }
   await loadQueue(); await loadCommits();
+  // 预加载评论数供工作台展示；失败不阻塞登录，进入评论页时会重试并给出提示
+  if (mode === 'live' && GISCUS_ON) {
+    ensureDiscussionComments().then(() => { if (currentRoute().page === 'dashboard') render(); });
+  }
   if (!location.hash) location.hash = '#/dashboard';
   await render();
 
@@ -640,11 +713,33 @@ async function boot() {
       log(act === 'queue-approve' ? '审核通过' : '审核驳回', item?.title || id);
       await render(); toast(act === 'queue-approve' ? '已通过（演示）' : '已驳回（演示）', 'ok'); return;
     }
-    if (act === 'comment-approve' || act === 'comment-hide' || act === 'comment-delete') {
-      const a = act === 'comment-approve' ? 'approve' : act === 'comment-hide' ? 'hide' : 'delete';
-      moderateLocalComment(id, a as any);
-      log(a === 'approve' ? '评论通过' : a === 'hide' ? '评论隐藏' : '评论删除', id);
-      await render(); toast('评论状态已更新', 'ok'); return;
+    if (act === 'comment-refresh') {
+      commentsLoaded = false;
+      await ensureDiscussionComments(true);
+      await render(); toast('评论已刷新', 'ok'); return;
+    }
+    if (act === 'comment-approve' || act === 'comment-unhide' || act === 'comment-hide' || act === 'comment-delete') {
+      const a = act === 'comment-hide' ? 'hide' : act === 'comment-delete' ? 'delete' : 'unhide';
+      if (mode === 'live' && GISCUS_ON) {
+        if (a === 'delete' && !window.confirm('确定删除这条评论？此操作不可恢复。')) return;
+        busy = true; btn.textContent = '处理中…';
+        try {
+          await gh.moderateDiscussionComment(id, a);
+          log(a === 'hide' ? '评论隐藏' : a === 'unhide' ? '评论取消隐藏' : '评论删除', id);
+          commentsLoaded = false;
+          await ensureDiscussionComments(true);
+          await render(); toast(a === 'hide' ? '评论已隐藏' : a === 'unhide' ? '评论已取消隐藏' : '评论已删除', 'ok');
+        } catch (err: any) {
+          toast(`操作失败：${err.message}`, 'err');
+          await render();
+        }
+        busy = false; return;
+      }
+      // demo 模式：仅改本机 localStorage
+      const local = a === 'hide' ? 'hide' : a === 'delete' ? 'delete' : 'approve';
+      moderateLocalComment(id, local as any);
+      log(local === 'approve' ? '评论通过（演示）' : local === 'hide' ? '评论隐藏（演示）' : '评论删除（演示）', id);
+      await render(); toast('评论状态已更新（演示）', 'ok'); return;
     }
     if (act === 'gh-close') {
       const n = Number(btn.dataset.n);
@@ -689,6 +784,7 @@ async function boot() {
         if (!check.canPush) throw new Error('该账号对目标仓库没有 push 权限，请检查 PAT 的仓库范围与权限');
         user = check; mode = 'live';
         await loadQueue(); await loadCommits();
+        if (GISCUS_ON) ensureDiscussionComments().then(() => { if (currentRoute().page === 'dashboard') render(); });
         log('登录', `PAT 权限自检通过 (${check.login})`);
         location.hash = '#/dashboard'; await render(); toast(`已连接 ${check.scope}`, 'ok');
       } catch (err: any) {
